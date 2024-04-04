@@ -1,0 +1,300 @@
+---
+title: "Data Science II Homework 3"
+author: "Camille Okonkwo"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+editor_options: 
+  chunk_output_type: console
+--- 
+\newpage
+
+```{r setup, include=FALSE}
+library(tidyverse)
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(tidymodels)
+library(caret)
+library(earth)
+library(pROC)
+library(vip)
+library(MASS)
+set.seed(2)
+```
+\newpage
+
+# Introduction
+
+## Background
+
+We will develop a model to predict whether a given car gets high or low gas mileage based on the dataset `auto.csv`. The dataset contains 392 observations.
+
+The response variable is `mpg_cat`, which indicates whether the miles per gallon of a car
+is high or low. 
+
+The predictors are:
+
+  • `cylinders`: Number of cylinders between 4 and 8
+  
+  • `displacement`: Engine displacement (cu. inches)
+  
+  • `horsepower`: Engine horsepower
+  
+  • `weight`: Vehicle weight (lbs.)
+  
+  • `acceleration`: Time to accelerate from 0 to 60 mph (sec.)
+  
+  • `year`: Model year (modulo 100)
+  
+  • `origin`: Origin of car (1. American, 2. European, 3. Japanese)
+
+## Split  the dataset into two parts: training data (70%) and test data (30%) 
+```{r partition}
+auto = read_csv("data/auto.csv") |> 
+  drop_na() |> 
+  mutate(
+    mpg_cat = as.factor(mpg_cat),
+    mpg_cat = forcats::fct_relevel(mpg_cat, c("low", "high"))
+  )
+
+set.seed(2)
+
+# create a random split of 70% training and 30% test data 
+data_split <- initial_split(data = auto, prop = 0.7)
+
+# partitioned datasets
+training_data = training(data_split)
+testing_data = testing(data_split)
+
+head(training_data)
+head(testing_data)
+```
+\newpage
+
+# 1a) Perform a logistic regression analysis using the training data. Are there redundant predictors in your model? If so, identify them. If none is present, please provide an explanation.
+```{r logit}
+ctrl <- trainControl(method = "cv",
+                     number = 10,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+set.seed(2)
+
+# logistic using glm
+glm.fit <- glm(mpg_cat ~ .,
+               data = training_data,
+               family = binomial(link = "logit"))
+
+coef(glm.fit)
+
+# logistic using caret
+set.seed(2)
+model.glm <- train(x = training_data[1:7],
+                   y = training_data$mpg_cat,
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+model.glm$finalModel
+
+#both models gave same coefficients
+
+# penalized logistic model
+glmnGrid <- expand.grid(alpha = seq(0, 1, length = 50),
+                        lambda = exp(seq(-5, 0, length = 50)))
+set.seed(2)
+
+model.glmn <- train(x = training_data[1:7],
+                    y = training_data$mpg_cat,
+                    method = "glmnet",
+                    tuneGrid = glmnGrid,
+                    metric = "ROC",
+                    trControl = ctrl)
+
+# visualizing AUC and regularization parameters
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+superpose.line = list(col = myCol))
+plot(model.glmn, par.settings = myPar, xTrans = function(x) log(x))
+summary(model.glmn)
+
+best_model = model.glmn$finalModel
+
+
+# extracting best lambda for coefficients
+best_lambda = model.glmn$bestTune$lambda
+
+# extracting coefficients in the best model with best lambda
+coefficients = coef(best_model, s = best_lambda)
+
+# extracting redundant predictors
+names(coefficients[coefficients == 0])
+```
+
+Per the penalized logistic, there are no redundant predictors.Each predictor variable is included in the model and provides valuable information that is duplicated by other predictors. With no redundant predictors, the model tends to be more interpretable because each predictor has a clear and unique role in explaining variation in the response variable. No redundant predictors also tells us the model has a high predictive power and findings can be generalized. 
+
+\newpage
+# 1b) Based on the model in (a), set a probability threshold to determine the class labels and compute the confusion matrix using the test data. Briefly interpret what the confusion matrix reveals about your model’s performance.
+```{r prob_a}
+# checking coding
+contrasts(auto$mpg_cat)
+
+# predict class labels using the logistic regression model and testing data
+test.pred.prob <- predict(glm.fit,
+                           newdata = testing_data,
+                           type = "response")
+ 
+ # setting a probability threshold of 0.5
+test.pred <- rep("low", length(test.pred.prob)) 
+test.pred[test.pred.prob > 0.5] <- "high"
+
+
+confusionMatrix(data = as.factor(test.pred), 
+                reference = testing_data$mpg_cat, 
+                positive = "high")
+
+# plotting test ROC curve
+roc.glm <- roc(testing_data$mpg_cat, test.pred.prob)
+plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.glm), col = 4, add = TRUE) # smooth ROC curve
+```
+
+The matrix reveals the accuracy of the model is 93.22%[87.08%-97.03%], meaning the model correctly predicts the class (low or high mileage car) 93.22% of the time on the testing data and we are 95% confident the accuracy ranges from 87.98% to 93.03%. A p-value less than 0.05 indicates to us there's sufficient evidence that the model's accuracy is better than simply predicting the most frequent class. A Kappa of 0.8643 shows there is high inter-rater agreement between the observed label and predicted label (by chance). A sensitivity of 0.9138 indicates that the model correctly identifies 91.38% of the high mileage cars, and a specificity of 0.95 indicates that the model correctly identifies 95% of the low mileage cars.
+
+In sum, the confusion matrix tells us the model performs well in distinguishing between high and low gas mileage cars. It has high accuracy, sensitivity, specificity, as well as positive and negative predictive values (0.9464 & 0.9194, respectively), suggesting that it is effective in making predictions. 
+\newpage
+
+# 1c) Train a multivariate adaptive regression spline (MARS) model. Does the MARS model improve the prediction performance compared to logistic regression?
+```{r}
+set.seed(2)
+
+# log stats
+coef(model.glm$finalModel)
+summary(model.glm)
+model.glm$fin
+
+vip(model.glm$finalModel, type = "stat")
+
+# MARS
+set.seed(2)
+
+model.mars <- train(x = training_data[1:7],
+                    y = training_data$mpg_cat,
+                    method = "earth",
+                    tuneGrid = expand.grid(degree = 1:4,
+                                           nprune = 2:20),
+                    metric = "ROC",
+                    trControl = ctrl)   
+
+ggplot(model.mars, highlight = TRUE)
+coef(model.mars$finalModel)
+
+set.seed(2)
+
+
+res <- resamples(list(GLM = model.glm,
+                      MARS = model.mars))
+summary(res)
+bwplot(res, metric = "ROC")
+
+# predicted probabilities with testing data
+glm.pred <- predict(model.glm, newdata = testing_data, type = "prob")[,2]
+mars.pred <- predict(model.mars, newdata = testing_data, type = "prob")[,2]
+
+# ROC curves
+roc.glm <- roc(testing_data$mpg_cat, glm.pred)
+roc.mars <- roc(testing_data$mpg_cat, mars.pred)
+
+```
+MARS has the highest mean and median ROC values, already pointing us that this model will have a better discriminatory power compared to the logistic model. However, in order to properly determine if MARS has better **predictive power**, we must consider the predicted probabilites using the testing data and compare the area under the curve values for each respective ROC curve for the log model and the MARS model. Based on the AUC values, the MARS model does marginally improve predictive performance compared to logistic regression.
+\newpage
+
+# 1d) Perform linear discriminant analysis using the training data. Plot the linear discriminant variable(s).
+```{r LDA}
+set.seed(2)
+
+# LDA using caret
+model.lda <- train(x = training_data[, 1:7],
+                   y = training_data$mpg_cat,
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+
+# prediction
+lda.pred2 <- predict(model.lda, newdata = testing_data, type = "prob")
+head(lda.pred2)
+plot(lda.pred2)
+
+# LDA using MASS
+lda.fit <- lda(mpg_cat~.,
+               data = training_data)
+
+# linear discriminant variables
+plot(lda.fit)
+```
+
+\newpage
+# 1e) Which model will you use to predict the response variable? Plot its ROC curve using the test data. Report the AUC and the misclassification error rate.
+```{r prediction}
+# resampling comparison
+res = resamples(list(
+                     GLM = model.glm,
+                     GLMN = model.glmn,
+                     MARS = model.mars,
+                     LDA = model.lda))
+summary(res)
+bwplot(res, metric = "ROC")
+
+# predicition
+glm.pred <- predict(model.glm, newdata = testing_data, type = "prob")[,2]
+glmn.pred <- predict(model.glmn, newdata = testing_data, type = "prob")[,2]
+mars.pred <- predict(model.mars, newdata = testing_data, type = "prob")[,2]
+lda.pred <- predict(model.lda, newdata = testing_data, type = "prob")[,2]
+
+# ROC curves (for AUC)
+roc.glm <- roc(testing_data$mpg_cat, glm.pred)
+roc.glmn <- roc(testing_data$mpg_cat, glmn.pred)
+roc.mars <- roc(testing_data$mpg_cat, mars.pred)
+roc.lda <- roc(testing_data$mpg_cat, lda.pred)
+
+# AUC values
+auc <- c(roc.glm$auc[1], roc.glmn$auc[1], roc.mars$auc[1], roc.lda$auc[1])
+
+modelNames <- c("glm", "glmn", "mars","lda")
+
+# combined ROC curves
+ggroc(list(roc.glm, roc.glmn, roc.mars, roc.lda),
+      legacy.axes = TRUE) + 
+  scale_color_discrete(labels = paste0(modelNames, " (", round(auc,3),")"),
+                       name = "Models (AUC)") + geom_abline(intercept = 0, slope = 1, color = "grey")
+
+# ROC for best model only (LDA)
+ggroc(roc.lda, legacy.axes = T) +
+  geom_abline(intercept = 0, slope = 1, color = "grey")
+
+# AUC for LDA
+roc.lda$auc
+
+# create a logical vector where we compare the predictions from the MARS model to the actual test data responses 
+misclass = (roc.lda$response != testing_data$mpg_cat)
+# take the mean of the logical vector to calculate the proportion of misclassifications
+mean(misclass)
+```
+
+From the re-sampling summary, we can see the MARS model has the highest mean and median ROC so I would use the MARS model to predict miles per gallon. The LDA model, however, has a greater AUC indicating better predictive performance in comparison to the MARS model. Considering the context of the data, while having high sensitivity and specificity (and therefore higher ROC values) are important for understanding and interpreting model performance, I will prefer to choose a model with higher discriminatory power and a better overall performance in correctly classifying high and low mileage cars. Therefore, I will choose the LDA model over the MARS. The difference in their ROC values is marginal. The AUC of the LDA model is `r roc.lda$auc`. The mis-classification error rate is `r mean(misclass)`, which essentially means that the LDA model's predictions matched every actual value in our response variable `mpg_cat`. 
+
