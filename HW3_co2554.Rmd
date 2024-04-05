@@ -114,38 +114,53 @@ model.glm$finalModel
 #both models gave same coefficients
 
 # penalized logistic model
-glmnGrid <- expand.grid(alpha = seq(0, 1, length = 50),
-                        lambda = exp(seq(-5, 0, length = 50)))
+glmnGrid.enet <- expand.grid(.alpha = seq(0, 1, length = 50),
+                        .lambda = exp(seq(-5, 0, length = 50)))
+
 set.seed(2)
 
-model.glmn <- train(x = training_data[1:7],
+model.glmn.enet <- train(x = training_data[1:7],
                     y = training_data$mpg_cat,
                     method = "glmnet",
-                    tuneGrid = glmnGrid,
+                    tuneGrid = glmnGrid.enet,
                     metric = "ROC",
                     trControl = ctrl)
+
+model.glmn.enet$bestTune
+coef(model.glmn.enet$finalModel)
 
 # visualizing AUC and regularization parameters
 myCol <- rainbow(25)
 myPar <- list(superpose.symbol = list(col = myCol),
 superpose.line = list(col = myCol))
-plot(model.glmn, par.settings = myPar, xTrans = function(x) log(x))
-summary(model.glmn)
+plot(model.glmn.enet, par.settings = myPar, xTrans = function(x) log(x))
 
-best_model = model.glmn$finalModel
+best_lambda_enet <- model.glmn.enet$bestTune$lambda
 
+best_lambda_coef_enet <- coef(model.glmn.enet$finalModel, s = best_lambda_enet)
+best_lambda_coef_enet
+# lasso
+glmnGrid.lasso <- expand.grid(.alpha =  1,
+                             .lambda = exp(seq(-5, 0, length = 50)))
 
-# extracting best lambda for coefficients
-best_lambda = model.glmn$bestTune$lambda
+set.seed(2)
 
-# extracting coefficients in the best model with best lambda
-coefficients = coef(best_model, s = best_lambda)
+model.glmn.lasso <- train(x = training_data[1:7],
+                    y = training_data$mpg_cat,
+                    method = "glmnet",
+                    tuneGrid = glmnGrid.lasso,
+                    metric = "ROC",
+                    trControl = ctrl)
 
-# extracting redundant predictors
-names(coefficients[coefficients == 0])
+plot(model.glmn.lasso, par.settings = myPar, xTrans = function(x) log(x))
+
+best_lambda_lasso <- model.glmn.lasso$bestTune$lambda
+
+best_lambda_coef_lasso <- coef(model.glmn.lasso$finalModel, s = best_lambda_lasso)
+best_lambda_coef_lasso
 ```
 
-Per the penalized logistic, there are no redundant predictors.Each predictor variable is included in the model and provides valuable information that is duplicated by other predictors. With no redundant predictors, the model tends to be more interpretable because each predictor has a clear and unique role in explaining variation in the response variable. No redundant predictors also tells us the model has a high predictive power and findings can be generalized. 
+Per the elastic net penalized logistic model, there are no redundant predictors. Lasso is more likely to shrink coefficients to zero, so when using an alpha = 1, no coefficients shrank in either model, telling us that all predictors are meaningful in the model. It's important to note in the matrix of coefficients for each respective model, some lambda values did shrink certain coefficients, but the lambda in both final models included all coefficients.
 
 \newpage
 # 1b) Based on the model in (a), set a probability threshold to determine the class labels and compute the confusion matrix using the test data. Briefly interpret what the confusion matrix reveals about your model’s performance.
@@ -186,8 +201,6 @@ set.seed(2)
 coef(model.glm$finalModel)
 summary(model.glm)
 model.glm$fin
-
-vip(model.glm$finalModel, type = "stat")
 
 # MARS
 set.seed(2)
@@ -237,8 +250,6 @@ model.lda <- train(x = training_data[, 1:7],
 
 # prediction
 lda.pred2 <- predict(model.lda, newdata = testing_data, type = "prob")
-head(lda.pred2)
-plot(lda.pred2)
 
 # LDA using MASS
 lda.fit <- lda(mpg_cat~.,
@@ -254,7 +265,8 @@ plot(lda.fit)
 # resampling comparison
 res = resamples(list(
                      GLM = model.glm,
-                     GLMN = model.glmn,
+                     GLMN.enet = model.glmn.enet,
+                     GLMN.lasso = model.glmn.lasso,
                      MARS = model.mars,
                      LDA = model.lda))
 summary(res)
@@ -262,23 +274,25 @@ bwplot(res, metric = "ROC")
 
 # predicition
 glm.pred <- predict(model.glm, newdata = testing_data, type = "prob")[,2]
-glmn.pred <- predict(model.glmn, newdata = testing_data, type = "prob")[,2]
+glmn.enet.pred <- predict(model.glmn.enet, newdata = testing_data, type = "prob")[,2]
+glmn.lasso.pred <- predict(model.glmn.lasso, newdata = testing_data, type = "prob")[,2]
 mars.pred <- predict(model.mars, newdata = testing_data, type = "prob")[,2]
 lda.pred <- predict(model.lda, newdata = testing_data, type = "prob")[,2]
 
 # ROC curves (for AUC)
 roc.glm <- roc(testing_data$mpg_cat, glm.pred)
-roc.glmn <- roc(testing_data$mpg_cat, glmn.pred)
+roc.glmn.enet <- roc(testing_data$mpg_cat, glmn.enet.pred)
+roc.glmn.lasso <- roc(testing_data$mpg_cat, glmn.lasso.pred)
 roc.mars <- roc(testing_data$mpg_cat, mars.pred)
 roc.lda <- roc(testing_data$mpg_cat, lda.pred)
 
 # AUC values
-auc <- c(roc.glm$auc[1], roc.glmn$auc[1], roc.mars$auc[1], roc.lda$auc[1])
+auc <- c(roc.glm$auc[1], roc.glmn.enet$auc[1], roc.glmn.lasso$auc[1], roc.mars$auc[1], roc.lda$auc[1])
 
-modelNames <- c("glm", "glmn", "mars","lda")
+modelNames <- c("glm", "glmn.enet", "glmn.lasso", "mars","lda")
 
 # combined ROC curves
-ggroc(list(roc.glm, roc.glmn, roc.mars, roc.lda),
+ggroc(list(roc.glm, roc.glmn.enet, roc.glmn.lasso, roc.mars, roc.lda),
       legacy.axes = TRUE) + 
   scale_color_discrete(labels = paste0(modelNames, " (", round(auc,3),")"),
                        name = "Models (AUC)") + geom_abline(intercept = 0, slope = 1, color = "grey")
@@ -290,11 +304,16 @@ ggroc(roc.lda, legacy.axes = T) +
 # AUC for LDA
 roc.lda$auc
 
-# create a logical vector where we compare the predictions from the MARS model to the actual test data responses 
-misclass = (roc.lda$response != testing_data$mpg_cat)
-# take the mean of the logical vector to calculate the proportion of misclassifications
-mean(misclass)
+
+misclass = predict(model.lda, newdata = testing_data, type = "raw")
+misclass2 = predict(model.mars, newdata = testing_data, type = "raw")
+# Convert character labels to binary
+misclass_binary <- ifelse(misclass == "low", 0, 1)
+misclass_binary2 <- ifelse(misclass2 == "low", 0, 1)
+# take the mean of the logical vector
+mean(misclass_binary)
+mean(misclass_binary2)
 ```
 
-From the re-sampling summary, we can see the MARS model has the highest mean and median ROC so I would use the MARS model to predict miles per gallon. The LDA model, however, has a greater AUC indicating better predictive performance in comparison to the MARS model. Considering the context of the data, while having high sensitivity and specificity (and therefore higher ROC values) are important for understanding and interpreting model performance, I will prefer to choose a model with higher discriminatory power and a better overall performance in correctly classifying high and low mileage cars. Therefore, I will choose the LDA model over the MARS. The difference in their ROC values is marginal. The AUC of the LDA model is `r roc.lda$auc`. The mis-classification error rate is `r mean(misclass)`, which essentially means that the LDA model's predictions matched every actual value in our response variable `mpg_cat`. 
+From the re-sampling summary, we can see the MARS model has the highest mean and median ROC so I would use the MARS model to predict miles per gallon. The LDA model, however, has a greater AUC indicating better predictive performance in comparison to the MARS model. Considering the context of the data, while having high sensitivity and specificity (and therefore higher ROC values) are important for understanding and interpreting model performance, I will prefer to choose a model with higher discriminatory power and a better overall performance in correctly classifying high and low mileage cars. Therefore, I will choose the LDA model over the MARS. The AUC of the LDA model is `r roc.lda$auc`. The mis-classification error rate is `r mean(misclass_binary)`. 
 
